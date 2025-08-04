@@ -7,23 +7,41 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - name: Enable RDP
+      - name: Enable RDP and firewall
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        shell: powershell
 
-      - name: Create User
+      - name: Create or update runneradmin user
         run: |
-          $pass = ConvertTo-SecureString $env:WINDOWS_ADMIN_PASSWORD -AsPlainText -Force
-          New-LocalUser -Name "runneradmin" -Password $pass -FullName "Runner Admin" -PasswordNeverExpires:$true
-          Add-LocalGroupMember -Group "Administrators" -Member "runneradmin"
+          $securePass = ConvertTo-SecureString $env:WINDOWS_ADMIN_PASSWORD -AsPlainText -Force
+          $existing = Get-LocalUser -Name "runneradmin" -ErrorAction SilentlyContinue
+          if ($null -eq $existing) {
+            New-LocalUser -Name "runneradmin" -Password $securePass -FullName "Runner Admin" -Description "User for RDP access" -PasswordNeverExpires:$true
+          } else {
+            Set-LocalUser -Name "runneradmin" -Password $securePass
+          }
+          # Add to Administrators group (ignore if already member)
+          try {
+            Add-LocalGroupMember -Group "Administrators" -Member "runneradmin" -ErrorAction Stop
+          } catch {
+            Write-Host "runneradmin already in Administrators or unable to add (continuing)."
+          }
+        shell: powershell
         env:
           WINDOWS_ADMIN_PASSWORD: ${{ secrets.WINDOWS_ADMIN_PASSWORD }}
 
       - name: Download cloudflared
-        run: Invoke-WebRequest https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -OutFile cloudflared.exe
+        run: |
+          Invoke-WebRequest https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -OutFile cloudflared.exe
+        shell: powershell
 
-      - name: Start Tunnel
-        run: .\cloudflared.exe tunnel --token $Env:CF_TUNNEL_TOKEN
+      - name: Start Cloudflare Tunnel (ephemeral)
+        run: |
+          Start-Process -FilePath .\cloudflared.exe -ArgumentList "tunnel", "--token", "$env:CF_TUNNEL_TOKEN", "tcp://localhost:3389" -NoNewWindow
+          Start-Sleep -Seconds 5
+          .\cloudflared.exe tunnel list
+        shell: powershell
         env:
           CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
