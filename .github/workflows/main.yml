@@ -1,0 +1,29 @@
+name: Free RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Enable RDP
+        run: |
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+      - name: Create User
+        run: |
+          $pass = ConvertTo-SecureString $env:WINDOWS_ADMIN_PASSWORD -AsPlainText -Force
+          New-LocalUser -Name "runneradmin" -Password $pass -FullName "Runner Admin" -PasswordNeverExpires:$true
+          Add-LocalGroupMember -Group "Administrators" -Member "runneradmin"
+        env:
+          WINDOWS_ADMIN_PASSWORD: ${{ secrets.WINDOWS_ADMIN_PASSWORD }}
+
+      - name: Download cloudflared
+        run: Invoke-WebRequest https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -OutFile cloudflared.exe
+
+      - name: Start Tunnel
+        run: .\cloudflared.exe tunnel --token $Env:CF_TUNNEL_TOKEN
+        env:
+          CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
