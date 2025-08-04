@@ -1,47 +1,33 @@
-name: Free RDP
+name: Free RDP via Cloudflare
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Manual start only
 
 jobs:
-  build:
+  activate-rdp:
     runs-on: windows-latest
+    timeout-minutes: 360 # 6 hours max
+    
     steps:
-      - name: Enable RDP and firewall
+      # Step 1: Create admin user
+      - name: Create Admin Account
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-        shell: powershell
-
-      - name: Create or update runneradmin user
-        run: |
-          $securePass = ConvertTo-SecureString $env:WINDOWS_ADMIN_PASSWORD -AsPlainText -Force
-          $existing = Get-LocalUser -Name "runneradmin" -ErrorAction SilentlyContinue
-          if ($null -eq $existing) {
-            New-LocalUser -Name "runneradmin" -Password $securePass -FullName "Runner Admin" -Description "User for RDP access" -PasswordNeverExpires:$true
-          } else {
-            Set-LocalUser -Name "runneradmin" -Password $securePass
-          }
-          # Add to Administrators group (ignore if already member)
-          try {
-            Add-LocalGroupMember -Group "Administrators" -Member "runneradmin" -ErrorAction Stop
-          } catch {
-            Write-Host "runneradmin already in Administrators or unable to add (continuing)."
-          }
-        shell: powershell
+          net user runneradmin "$env:WIN_PASS" /add /Y
+          net localgroup administrators runneradmin /add
         env:
-          WINDOWS_ADMIN_PASSWORD: ${{ secrets.WINDOWS_ADMIN_PASSWORD }}
+          WIN_PASS: ${{ secrets.WINDOWS_ADMIN_PASSWORD }}
+        shell: cmd
 
-      - name: Download cloudflared
+      # Step 2: Download cloudflared
+      - name: Download Cloudflared
         run: |
-          Invoke-WebRequest https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -OutFile cloudflared.exe
-        shell: powershell
+          bitsadmin /transfer download /download /priority normal https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe cloudflared.exe
 
-      - name: Start Cloudflare Tunnel (ephemeral)
+      # Step 3: Start tunnel
+      - name: Start Cloudflare Tunnel
         run: |
-          Start-Process -FilePath .\cloudflared.exe -ArgumentList "tunnel", "--token", "$env:CF_TUNNEL_TOKEN", "tcp://localhost:3389" -NoNewWindow
-          Start-Sleep -Seconds 5
-          .\cloudflared.exe tunnel list
-        shell: powershell
+          start /B cloudflared.exe tunnel --no-autoupdate run --token %CF_TOKEN%
+          timeout /t 21600 /nobreak # 6 hours timeout
         env:
-          CF_TUNNEL_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
+          CF_TOKEN: ${{ secrets.CF_TUNNEL_TOKEN }}
+        shell: cmd
